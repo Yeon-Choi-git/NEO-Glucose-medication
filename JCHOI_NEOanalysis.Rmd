@@ -13,10 +13,10 @@ output: html_document
 
 # We take the following steps: 
 ### Step 1: Prepare datasets (baseline, lab, medication data). Clean up & merge
-### Step 2**: Descriptive statistics & plots
-### Step 3**: Fitting LMMs
-### Step 4**: Fitting spline models
-### Step 5**: Check medication information 
+### Step 2: Descriptive statistics & plots
+### Step 3: Fitting LMMs
+### Step 4: Fitting spline models
+### Step 5: Check medication information 
 
 
 ```{r echo=FALSE, include=FALSE, message=FALSE}
