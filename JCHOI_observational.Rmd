@@ -1,0 +1,1295 @@
+---
+title: "NEO-PP-187_table1"
+author: "JChoi"
+date: "3-11-2020"
+output: html_document
+---
+
+> This document is for estimating glucose-lowering medicatino effect in diabetes incident cases in the NEO study. The protocol can be found [here: protocol](LINK REMOVED)
+> + We combine NEO baselie, GP visit, laboratory data.
+> + A list for incident diabetes cases is preliminary.
+
+
+# We take the following steps: 
+### Step 1: Prepare datasets (baseline, lab, medication data). Clean up & merge
+### Step 2**: Descriptive statistics. (create Table 1 & spaghetti plots)
+### Step 3**: Fitting LMMs
+### Step 4**: Fitting spline models
+### Step 5**: Check medication information 
+
+
+```{r echo=FALSE, include=FALSE, message=FALSE}
+setwd("//vf-i-epid/epid$/Choi/NEO-PP-187/syntax")
+```
+
+```{r echo=FALSE, warning=FALSE, include=FALSE, message=FALSE}
+#install.packages("readstata13")
+#install.packages("table1")
+#install.packages("lme4")
+#install.packages("gt")
+#install.packages("ciTools")
+#install.packages("rms")
+#install.packages("Rfast")
+library(readstata13)
+library(table1)
+library(ggplot2)
+library(lme4)
+library(dplyr)
+library(readr)
+library(gt)
+library(rms)
+library(splines)
+library(base)
+library(Rfast)
+```
+
+<br>
+
+<br>
+
+
+# Step 1
+### 1.1 Load data files
+  + lab: laboratory measurements (hba1c, glucose)
+  + med: GP medication data
+  + base: NEO baseline data
+
+```{r}
+lab<-data.frame(read.dta13("//vf-i-epid/epid$/Choi/NEO-PP-187/LAB_Choi_2020-07-30.dta", nonint.factors=TRUE))
+med<-data.frame(read.dta13("//vf-i-epid/epid$/Choi/NEO-PP-187/MEDICATIE_Choi_2020-07-30.dta", nonint.factors=TRUE))
+base<-data.frame(read.dta13('//vf-i-epid/epid$/Choi/NEO-PP-187/NEO_analyse_PP187_gluclowmed_Choi_2020-07-30.dta', nonint.factors=TRUE))
+#(check what's happening with 'income' var in the baseline data)-> fixed
+
+#View(lab)
+#View(med)
+#View(base)
+
+head(base)
+head(med)
+head(lab)
+```
+
+<br>
+
+### 1.2 Check unique cases in each dataset
+```{r}
+#ID's are not coded as number
+base$PP187ID<-as.numeric(base$PP187ID )
+med$PP187ID<- as.numeric(med$PP187ID)
+lab$PP187ID<- as.numeric(lab$PP187ID)
+
+print("# unique IDs in baseline data")
+length(unique(base$PP187ID))
+
+print("# unique IDs in medication data")
+length(unique(med$PP187ID))
+
+print("# unique IDs in laboratory data")
+length(unique(lab$PP187ID))
+```
+
+<br>
+
+### 1.3 Identify the IDs included in all three data
+```{r}
+#base$PP187ID %>% intersect(med$PP187ID) %>% intersect(lab$PP187ID) %>% length
+idlist<-base$PP187ID %>% 
+          intersect(med$PP187ID) %>% 
+          intersect(lab$PP187ID) %>% 
+          data.frame
+
+colnames(idlist)[1]<-"PP187ID"
+idlist
+```
+
+<br>
+
+### 1.4 Select IDs included in 'idlist' in each dataset
+```{r}
+base.comp<-right_join(base,idlist, by="PP187ID")
+lab.comp<-right_join(lab,idlist, by="PP187ID")
+med.comp<-right_join(med,idlist, by="PP187ID")
+
+```
+
+<br>
+
+### 1.5 Prepare 'lab' data
+  + Cleaning up same measurements coded under different names. 
+  + Remove physiologically abnormal values (eg., Hba1c DCCT < 4, glucose = 0) 
+```{r}
+str(lab.comp)
+```
+
+<br>
+
+**1) HbA1C**
+  + Recode variables
+  + Convert HbA1c measurements (HbA1c was measured in two different ways: DCCT and IFCC).
+  + Check abnormal HbA1c values
+  + Some ppl have values under 20: set them to missing
+  
+```{r}
+#Change data var. format
+lab.comp$testdaten<-lab.comp$testdaten %>% 
+                      as.character %>% 
+                      as.Date(format="%Y%m%d")
+
+
+#group HbA1c IFCC measurements together
+lab.comp$descriptio[lab.comp$descriptio=="HbA1c (glycohemoglobine) IFCC"] <-"HbA1c IFCC"
+lab.comp$descriptio[lab.comp$descriptio=="GlycoHb/HbA1c IFCC"] <-"HbA1c IFCC"
+lab.comp$descriptio[lab.comp$descriptio=="HbA1C (nieuw)"] <-"HbA1c IFCC"
+
+
+#group HbA1c DCCT measurements together
+lab.comp$descriptio[lab.comp$descriptio=="glycoHb/HbA1c"] <-"HbA1c DCCT"
+lab.comp$descriptio[lab.comp$descriptio=="glycohemoglobine (HbA1c) DCCT"] <-"HbA1c DCCT"
+
+
+#convert HbA1c DCCT to IFCC
+DtoF<-function(x){
+  round((x*0.915/10)+2.15,1)
+}
+
+lab.comp$valuen2<-ifelse(lab.comp$descriptio=="HbA1c IFCC", 
+                         DtoF(lab.comp$valuen), 
+                         lab.comp$valuen)
+
+lab.comp$descriptio2<-ifelse(lab.comp$descriptio=="HbA1c IFCC", 
+                             "HbA1c DCCT", 
+                             lab.comp$descriptio)
+
+#Check abnormal values, set them to missing for now.
+#sum(lab.comp$valuen2[lab.comp$descriptio=="HbA1c IFCC"]<20, na.rm=TRUE)
+lab.comp$valuen2[lab.comp$valuen2<4 & lab.comp$descriptio2=='HbA1c DCCT']<-NA
+
+```
+
+<br>
+
+  + Plots: HbA1c DCCT before & after cleaning
+```{r}
+par(mfrow=c(1,2))
+hist(lab.comp$valuen[lab.comp$descriptio=="HbA1c DCCT"],
+     xlab = "HbA1c DCCT [%]",
+     main = "Before cleaning")
+
+
+hist(lab.comp$valuen2[lab.comp$descriptio=="HbA1c DCCT"],
+     xlab = "HbA1c DCCT [%]",
+     main = "After cleaning")
+```
+
+<br>
+
+**2) Glucose nuchter**
+  + Checking physiologically impossible glucose values
+```{r}
+#range(lab.comp$valuen[lab.comp$descriptio2=='Glucose nuchter'], na.rm=TRUE)
+
+sum(lab.comp$valuen[lab.comp$descriptio2=='Glucose nuchter']>30, na.rm=TRUE)
+
+sum(lab.comp$valuen2[lab.comp$descriptio2=="Glucose nuchter"]==0, na.rm=TRUE)
+```
+<br>
+
+  + 21 ppl with glucose level >80. (The rest has glucose value under 30): Divide these values by 10, according to Olaf.
+  + If glucose level is 0, set it to missing.
+```{r}
+# Recode names
+lab.comp$descriptio2[lab.comp$descriptio=="glucose nuchter, veneus (lab)"] <-"Glucose nuchter"
+lab.comp$descriptio2[lab.comp$descriptio=="glucose nuchter, draagbare meter"] <-"Glucose nuchter"
+
+# Unrealistic high values-> divid with 10
+lab.comp$valuen2<-ifelse(lab.comp$descriptio2=='Glucose nuchter' & lab.comp$valuen2>30, 
+                         lab.comp$valuen2/10,
+                         lab.comp$valuen2)
+
+# glucose =0 -> missing
+lab.comp$valuen2[lab.comp$valuen2==0 & lab.comp$descriptio2=='Glucose nuchter']<-NA
+```
+
+<br>
+
+  + Plots: glucose level before & after cleaning
+```{r}
+par(mfrow=c(1,2))
+hist(lab.comp$valuen[lab.comp$descriptio2=="Glucose nuchter"], 
+     xlab = "Fasting glucose [mmol/L]", 
+     main="Before cleaning")
+
+hist(lab.comp$valuen2[lab.comp$descriptio2=="Glucose nuchter"], 
+     xlab = "Fasting glucose [mmol/L]", 
+     main="After cleaning")
+```
+
+<br>
+
+### 1.6 Prepare 'base' data
+```{r}
+#Some factor vars are numeric.
+names<- c('sexe',
+          'etnizelf',
+          'etnwhite',
+          'eduh',
+          'income',
+          'hypertensie',
+          'Abdomen',
+          'Vetpresent',
+          'ATPIIIglucose',
+          'glucmet2bl',
+          'nuchter',
+          'devmeal',
+          'medC10liplow',
+          "medA10gluclow",
+          "medHypertension",
+          "medN06A",
+          "medN05A",
+          "medN05B" ,
+          "medH03A",
+          "medL02A",
+          "medL02B")
+base.comp[,names]<-lapply(base.comp[,names],factor)
+#str(base)
+
+
+# Labels the variables, for table 1
+label(base.comp$sexe)<-"Sex"
+base.comp$sexe<-recode(base.comp$sexe, 'man'='Male', 'vrouw'='Female')
+label(base.comp$leeftijd)<-"Age"
+label(base.comp$eduh)<-"Educaton"
+label(base.comp$hypertensie)<-"Hypertension"
+label(base.comp$bmim)<-"BMI"
+label(base.comp$glucose1)<-"Glucose"
+label(base.comp$Insuline_r1)<-"Insulin"
+label(base.comp$homa1IR)<-"HOMA1-IR"
+label(base.comp$HBA1C)<-"HbA1c"
+label(base.comp$hypertensie)<-"Hypertension"
+base.comp$hypertensie<-recode(base.comp$hypertensie, 'nee'='No', 'ja'='Yes')
+label(base.comp$choltot1)<-"Total cholesterol"
+label(base.comp$trig1)<-"Triglycerides"
+label(base.comp$hdlc1)<-"HDL"
+label(base.comp$fldl1)<-"LDL"
+label(base.comp$medC10liplow)<-"Lipid-lowering drugs use"
+label(base.comp$medA10gluclow)<-"Glucose-lowering drugs use"
+label(base.comp$medHypertension)<-"Hypertension drugs use"
+
+units(base.comp$leeftijd)<-"years"
+units(base.comp$bmim)<-"kg/m2"
+units(base.comp$glucose1)<-"mmol/L"
+units(base.comp$Insuline_r1)<-"mU/L"
+units(base.comp$HBA1C)<-"%"
+units(base.comp$choltot1)<-"mmol/L"
+units(base.comp$trig1)<-"mmol/L"
+units(base.comp$hdlc1)<-"mmol/L"
+units(base.comp$fldl1)<-"mmol/L"
+```
+
+<br>
+
+
+### 1.7 Identify the earliest prescription date
+  + Identify the earliest prescription date for each individual and defined it as 'time 0'.
+```{r}
+#Finding the first prescription dates for each person
+prescdata_tmp<-matrix(NA, length(base.comp$PP187ID), 2)
+
+for(i in base.comp$PP187ID){
+  prescdata_tmp[which(base.comp$PP187ID==i),] <-cbind(i, min(med.comp$prescdate[med.comp$PP187ID==i]))  
+  prescdata_tmp
+}
+
+prescdata_tmp<-data.frame(prescdata_tmp)
+colnames(prescdata_tmp)<-c("PP187ID", "prescdata")
+prescdata_tmp
+```
+
+<br>
+
+
+### 1.8 Merge lab & medication data
+  + We now know whether each lab measurement is before or after medication prescription & when.
+```{r}
+#Merge the first prescription dates data to the lab data
+
+lab.med<-merge(lab.comp, prescdata_tmp, by="PP187ID")
+lab.med$prescdata <- lab.med$prescdata %>% 
+                        as.character %>% 
+                        as.Date("%Y%m%d")
+
+#centralize the time to prescription date (in a month-scale)
+lab.med$time0<- as.numeric((lab.med$testdaten - lab.med$prescdata)/30.4)
+
+#indicator for before/ after of using medication
+lab.med$medindi<-ifelse(lab.med$time0>0, 1, 0)
+```
+
+<br>
+
+### 1.9 Creating categorical time variables for the later LMM models
+  + Dummy var. for time:
+  + 6m to 1y before prescription (reference)
+  + 6m to 3m before prescription
+  + 3m to 0m before prescription
+  + 0m to 3m after prescription
+  + 3m to 6m after prescription
+  + 6m to 1y after prescription
+```{r}
+#Categorical time variable
+lab.med$timebefore_6m<-ifelse(lab.med$time0 <= -6, 1, 0)
+lab.med$time_6m<-ifelse(lab.med$time0 > -6 & lab.med$time0 <= -3, 1, 0)
+lab.med$time_3m<-ifelse(lab.med$time0 > -3 & lab.med$time0 <= 0, 1, 0)
+lab.med$time3m<-ifelse(lab.med$time0>0 & lab.med$time0<=3, 1, 0)
+lab.med$time6m<-ifelse(lab.med$time0>3 & lab.med$time0<=6, 1, 0)
+lab.med$time1y<-ifelse(lab.med$time0>6 & lab.med$time0<=12, 1, 0)
+lab.med$timeafter1y<-ifelse(lab.med$time0>12, 1, 0)
+
+lab.med$timemonth<-round(lab.med$time0)
+```
+
+<br>
+
+### 1.10 lab.med with baseline data
+```{r}
+compdat<-left_join(lab.med, base, by="PP187ID")
+dim(compdat)
+
+```
+
+<br>
+
+
+### 1.11 Check irregularities
+
+```{r}
+#compdat$valuen2[compdat$descriptio2=="Glucose nuchter"] %>% tapply(round(compdat$time0[compdat$descriptio2=="Glucose nuchter"]), mean, na.rm=T)
+```
+  + Seems like people stop using the medication in a long term?? the values regress back to the level before medication use.
+
+<br>
+
+##### 1.11.1 Remove observations who does not have any information before being prescribed for medication.
+```{r}
+removeid<-as.numeric()
+for(i in unique(compdat$PP187ID)){
+removeid[length(removeid)+1] <-ifelse(sum(compdat$time0 <=0 & compdat$PP187ID==i)==0,
+                               i,
+                              NA)
+}
+removeid<-removeid[!is.na(removeid)]
+compdat<-compdat[-which(compdat$PP187ID %in% removeid), ]
+```
+
+
+<br>
+
+##### 1.11.2 Rremoving t-1 before medication prescription to avoid random high.
+```{r}
+#Remove the last observations before the prescription
+removerow<-as.numeric()
+for(i in unique(compdat$PP187ID)){
+  #return the row numbers that contain the last observations before the medication prescription
+  
+    removerow[length(removerow)+1] <- which(compdat$time0==sort(compdat$time0[compdat$time0 <=0 & compdat$PP187ID==i], decreasing = T)[1] & compdat$PP187ID==i)[1]
+    removerow[length(removerow)+1] <- which(compdat$time0==sort(compdat$time0[compdat$time0 <=0 & compdat$PP187ID==i], decreasing = T)[1] & compdat$PP187ID==i)[2]
+  }
+
+removerow<-removerow[!is.na(removerow)]
+compdat<-compdat[-removerow, ]
+```
+
+<br>
+
+
+##### 1.11.3 Testrict data to 12m before & after prescription. To few observations (<8) outside the timeframe.
+```{r}
+#Save the complete data for later
+compdat_ori<-compdat
+compdat<-compdat_ori %>% filter(abs(time0)<=12)
+compdat$timemonth<-round(compdat$time0)
+```
+
+<br>
+
+##### 1.12 Final datasets
+```{r}
+compdat_hba1c<-compdat %>% filter(descriptio2=="HbA1c DCCT")
+compdat_glu<-compdat %>% filter(descriptio2=="Glucose nuchter")
+
+
+print("dimention of the complete set")
+dim(compdat)
+
+print("dimention of the hba1c data")
+dim(compdat_hba1c)
+
+print("dimention of the glucose data")
+dim(compdat_glu)
+#head(compdat)
+
+
+```
+
+
+<br>
+
+<br>
+
+# Step 2
+
+
+```{r}
+#Summarizing the number of repeated measurement for each person (median; quantile)
+nrepeat<-data.frame()
+
+for(i in unique(data)){
+  
+  tmpdata<-data %>% filter(PP187ID==i)
+  
+  # ID
+  nrepeat[i,1]<-i
+  
+  # total number of repeated measurements
+  nrepeat[i,2]<-nrow(tmpdata)
+  
+  # number of repeated measurements after prescription 
+  nrepeat[i,3]<-sum(tmpdata$time0>0)
+  
+  # Timing of the second last measurement before prescription
+  nrepeat[i,4]<-sort(unique(tmpdata$time0[tmpdata$time0 <=0]), decreasing = T)[2]
+  
+  # Timing of the last measurement before prescription
+  nrepeat[i,5]<-sort(unique(tmpdata$time0[tmpdata$time0 <=0]), decreasing = T)[1]
+  
+  # Value of the second last measurement before prescription
+  nrepeat[i,6]<-tmpdata$valuen2[tmpdata$time0==sort(tmpdata$time0[tmpdata$time0 <=nrepeat[i,4]], decreasing = T)[1]][1]
+  
+  # Value of the last measurement before prescription
+    nrepeat[i,7]<-tmpdata$valuen2[tmpdata$time0==sort(tmpdata$time0[tmpdata$time0 <=nrepeat[i,5]], decreasing = T)[1]][1]
+    
+  # Timing of the first measurement after prescription
+  nrepeat[i,8]<-sort(unique(tmpdata$time0[tmpdata$time0 >0]), decreasing = F)[1]
+  
+  # Value of the first measurement after prescription
+  nrepeat[i,9]<-tmpdata$valuen2[tmpdata$time0==sort(tmpdata$time0[tmpdata$time0 >nrepeat[i,10]], decreasing = F)[1]][1]
+  }
+
+colnames(nrepeat)<-c("PP187ID", 
+                     "nrepeated", 
+                     "n_after_med", 
+                     "t_2nd_before"
+                     "t_before"
+                     "labval_2nd_before",
+                     "labval_before",
+                     "t_after",
+                     "labval_after")
+
+nrepeat<-subset(nrepeat, measurement != 0 & aftertime0 != 0 )
+nrepeat
+```
+
+
+
+```{r}
+print('number of repeated measurement (median/iqr)')
+median(nrepeat$measurement); quantile(nrepeat$measurement, probs=c(0.25, 0.75))
+print(' number of repeated measurement after prescription (median/iqr)')
+median(nrepeat$aftertime0, na.rm = TRUE); quantile(nrepeat$aftertime0, probs=c(0.25, 0.75), na.rm = TRUE)
+print('2nd last measurement timing before the prescription (median/iqr)')
+median(nrepeat$`t-1last`, na.rm = TRUE); quantile(nrepeat$`t-1last`, probs=c(0.25, 0.75), na.rm = TRUE)
+print('Last measurement timing before the prescription (median/iqr)')
+median(nrepeat$tlast, na.rm = TRUE); quantile(nrepeat$tlast, probs=c(0.25, 0.75), na.rm = TRUE)
+
+#HbA1c
+print('HbA1c: 2nd last before the prescription (mean/sd)')
+mean(nrepeat$`hb_t-1last`, na.rm=T); sd(nrepeat$`hb_t-1last`, na.rm=T)
+print('HbA1c: Last before the prescription (mean/sd)')
+mean(nrepeat$hb_tlast, na.rm=T); sd(nrepeat$hb_tlast, na.rm=T)
+
+
+#Glucose
+print('Glucose: 2nd last before the prescription')
+mean(nrepeat$`glu_t-1last`, na.rm=T); sd(nrepeat$`glu_t-1last`, na.rm=T)
+print('Glucose: Last before the prescription')
+mean(nrepeat$glu_tlast, na.rm=T); sd(nrepeat$glu_tlast, na.rm=T)
+
+median(nrepeat$tfirst, na.rm = TRUE); quantile(nrepeat$tfirst, probs=c(0.25, 0.75), na.rm = TRUE)
+mean(nrepeat$glu_tfirst, na.rm=T); sd(nrepeat$glu_tfirst, na.rm=T)
+
+
+```
+
+
+### 2.1 Make a baseline table
+```{r}
+#table1(~sexe+ 
+#        leeftijd +
+#        etnwhite +
+#        eduh +
+#        income +
+#        bpsystgem +
+#        bpdiastgem +
+#        hypertensie+
+#        lengtem +
+#        gewichtm +
+#        bmim +
+#        vetpercentage +
+#        middelomtrek +
+#        heupomtrek +
+#        Abdomen +
+#        Vetpresent +
+#        MSAT +
+#        MVAT +
+#        SSAT + 
+#        SVAT +
+#        VATSATratio +
+#        ATPIIIglucose +
+#        glucmet2bl+
+#        nuchter +
+#        devmeal +
+#        glucose1 +
+#        glucose2 +
+#        glucose3 +
+#        Insuline_r1 +
+#        insuline_r2 +
+#        insuline_r3 +
+#        homa1B +
+#        homa1IR +
+#        HBA1C +
+#        choltot1 +
+#        trig1 +
+#        trig2 +
+#        trig3 + 
+#        hdlc1 +
+#        fldl1 +
+#        ALBM1 +
+#        screat +
+#        VitD25OH1_cal +
+#        calcialb +
+#        calcium1 +
+#        natrium +
+#        kalium +
+#        urizuur +
+#        medC10liplow +
+#        medA10gluclow +
+#        medHypertension +
+#        medN06A +
+#        medN05A +
+#        medN05B +
+#        medH03A +
+#        medL02A +
+#        medL02B,
+#       data=base.comp)
+
+table1(~sexe+ 
+        leeftijd +
+        eduh +
+        hypertensie+
+        bmim +
+        glucose1 +
+        Insuline_r1 +
+        homa1IR +
+        HBA1C +
+        choltot1 +
+        trig1 +
+        hdlc1 +
+        fldl1 +
+        medC10liplow +
+        medA10gluclow +
+        medHypertension,
+       data=base.comp)
+
+```
+
+
+### 2.2 Box plots: values at eath time point (in month)
+  + To Olaf: are there any values unrealistic?
+```{r}
+
+give.n <- function(x){
+  return(c(y = 5, label = length(x))) 
+  # experiment with the multiplier to find the perfect position
+}
+
+
+box_hba1c <- compdat_hba1c %>% ggplot(aes(factor(timemonth), valuen2)) + 
+              geom_boxplot() +
+              ylim(5,13) +
+              stat_summary(fun.data = give.n, geom = "text", fun = median, position = position_dodge(width = 0.75)) +
+  ylab("HbA1c DCCT") +
+  xlab("Time in month")
+
+
+box_glu <- compdat_glu %>% ggplot(aes(factor(timemonth), valuen2)) + 
+              geom_boxplot() +
+              ylim(5,13) +
+              stat_summary(fun.data = give.n, geom = "text", fun = median,
+                                position = position_dodge(width = 0.75)) +
+  ylab("Glucose") +
+  xlab("Time in month")
+
+
+box_hba1c  ; box_glu
+```
+
+
+### 2.3 Spaghetti plots for every participants
+  + HbA1c DCCT
+```{r}
+plotlist_hba1c<-list()
+
+for(i in 1:15){
+#spaghetti plots per 15 individuals
+  plot<-compdat_hba1c[compdat_hba1c$PP187ID %in% unique(compdat_hba1c$PP187ID)[((i-1)*15+1):(15*i)],] %>% 
+        ggplot(aes(x = time0, y = valuen2, group= PP187ID)) + 
+        geom_line() +
+        xlim(-12, 12) +
+        aes(colour = factor(PP187ID)) +
+        labs(x="Number of months (Time0: prescription date)", y="HbA1c DCCT [%]")
+plotlist_hba1c[[i]]<-plot
+}
+
+plotlist_hba1c
+```
+
+<br>
+
+  + Glucose nucther
+```{r}
+plotlist_glu<-list()
+
+for(i in 1:15){
+#spaghetti plots per 15 individuals
+  plot<- compdat_glu[compdat_glu$PP187ID %in% unique(compdat_glu$PP187ID)[((i-1)*15):(15*i)],] %>% 
+         ggplot(aes(x = time0, y = valuen2, group= PP187ID)) + 
+         geom_line() +
+         aes(colour = factor(PP187ID)) +
+         labs(x="Number of months (Time0: prescription date)", y="Glucose [mmol/L]")
+plotlist_glu[[i]]<-plot
+}
+
+plotlist_glu
+```
+
+
+
+
+# Step 3: fitting LMMs
+
+<br>
+
+### 3.1 HbA1c
+
+<br>
+
+#### Model 0 HbA1c: intercept only
+```{r}
+hba1c.m0<- lmer(valuen2~ (1 |PP187ID),
+                data=compdat_hba1c)
+
+summary(hba1c.m0)
+```
+
+<br>
+
+#### Model 1 HbA1c: medication use as a fixed and a random effect
+```{r}
+hba1c.m1<- lmer(valuen2~ (1+medindi|PP187ID) + medindi,
+                data=compdat_hba1c)
+
+summary(hba1c.m1)
+
+```
+
+<br>
+
+#### Model 2 HbA1c: additional covariates
+```{r}
+hba1c.m2<- lmer(valuen2~ (1+medindi|PP187ID) + medindi + sexe + leeftijd + bmim,
+                data=compdat_hba1c)
+
+summary(hba1c.m2)
+```
+
+<br>
+
+#### Model 3 HbA1c: interaction between time * medication use
+```{r}
+hba1c.m3<- lmer(valuen2~ (1+medindi|PP187ID) + medindi*time0 + sexe + leeftijd + bmim,
+                data=compdat_hba1c)
+
+summary(hba1c.m3)
+```
+
+<br>
+
+```{r}
+#Anova for myself
+#anova(lmm.hba1c.m0, lmm.hba1c.m1, lmm.hba1c.m2, lmm.hba1c.m3)
+```
+
+<br>
+
+#### Categorial time model
+```{r}
+##### Use these #####
+#lab.med$timebefore_6m<-ifelse(lab.med$time0 <= -6, 1, 0)
+#lab.med$time_6m<-ifelse(lab.med$time0 > -6 & lab.med$time0 <= -3, 1, 0)
+#lab.med$time_3m<-ifelse(lab.med$time0 > -3 & lab.med$time0 <= 0, 1, 0)
+#lab.med$time3m<-ifelse(lab.med$time0>0 & lab.med$time0<=3, 1, 0)
+#lab.med$time6m<-ifelse(lab.med$time0>3 & lab.med$time0<=6, 1, 0)
+#lab.med$time1y<-ifelse(lab.med$time0>6 & lab.med$time0<=12, 1, 0)
+
+
+hba1c.m4<- lmer(valuen2~ (1+medindi|PP187ID) +
+                time_6m + time_3m + time3m + time6m + time1y + sexe + leeftijd + bmim,
+                data=compdat_hba1c)
+
+summary(hba1c.m4)
+```
+
+
+<br>
+
+<br>
+
+### 3.2 Glucose
+
+<br>
+
+#### Model 0 glucose: intercept only
+```{r}
+glu.m0<- lmer(valuen2~ (1|PP187ID),
+              data=compdat_glu)
+
+summary(glu.m0)
+```
+
+<br>
+
+#### Model 1 glucose: medication use as a fixed and a random effect
+```{r}
+glu.m1<- lmer(valuen2~ (1+medindi|PP187ID) + medindi,
+              data=compdat_glu)
+
+summary(glu.m1)
+```
+
+<br>
+
+#### Model 2 HbA1c: additional covariates
+```{r}
+glu.m2<- lmer(valuen2~ (1+medindi|PP187ID) + medindi + sexe + leeftijd + bmim,
+              data=compdat_glu)
+
+summary(glu.m2)
+```
+
+<br>
+
+#### Model 3 HbA1c: interaction between time * medication use
+```{r}
+glu.m3<- lmer(valuen2~ (1+medindi|PP187ID) + medindi*time0 + sexe + leeftijd + bmim,
+              data=compdat_glu)
+
+summary(glu.m3)
+```
+
+
+<br>
+
+#### Categorical time model
+```{r}
+##### Use these #####
+#lab.med$timebefore_6m<-ifelse(lab.med$time0 <= -6, 1, 0)
+#lab.med$time_6m<-ifelse(lab.med$time0 > -6 & lab.med$time0 <= -3, 1, 0)
+#lab.med$time_3m<-ifelse(lab.med$time0 > -3 & lab.med$time0 <= 0, 1, 0)
+#lab.med$time3m<-ifelse(lab.med$time0>0 & lab.med$time0<=3, 1, 0)
+#lab.med$time6m<-ifelse(lab.med$time0>3 & lab.med$time0<=6, 1, 0)
+#lab.med$time1y<-ifelse(lab.med$time0>6 & lab.med$time0<=12, 1, 0)
+glu.m4<- lmer(valuen2~ (1+medindi|PP187ID) + 
+              time_6m + time_3m + time3m + time6m + time1y + sexe + leeftijd + bmim,
+              data=compdat_glu)
+
+summary(glu.m4)
+
+```
+
+
+<br>
+
+### 3.3 Sumamry table for categorical models 
+```{r}
+
+summarytab<-function(results){
+tabs<-list()  
+
+#Random effects
+raneff.name<-c("Intercept",
+          "Medication use",
+          "Intercept & Medication use",
+          "Residual")
+
+resvar<-results %>% VarCorr %>% as.data.frame 
+raneff.covar<-resvar[,4] %>% round(2)
+raneff.cosd<- resvar[,5] %>% round(2)
+raneff.NA<-rep(NA, length(raneff.name))
+raneff.dat<-data.frame(raneff.name, raneff.covar, raneff.cosd, raneff.NA)
+colnames(raneff.dat)<-c("Random effects",
+                        "Covariance",
+                        "SD",
+                        " ")
+
+fixeff.name<-c("Intercept",
+          "3m - 6m before prescription",
+          "0 - 3m before prescription",
+          "0 - 3m after prescription",
+          "3m - 6m after prescription",
+          "6m - 1y after prescription",
+          "Gender (0=Male, 1=female)",
+          "Age at the first visit",
+          "BMI at the first visit")
+
+resest<-results %>% summary %>% coef %>% round(2)
+fixeff.est<- resest[,1]
+fixeff.se<- resest[,2]
+fixeff.tval<-resest[,3]
+fixeff.dat<-data.frame(fixeff.name, fixeff.est, fixeff.se, fixeff.tval, row.names = )
+colnames(fixeff.dat)<-c("Fixed effects",
+                        "Estimate",
+                        "SE",
+                        "t-val")
+
+
+tabs[[1]]<-gt(data=raneff.dat)
+tabs[[2]]<-gt(data=fixeff.dat)
+tabs
+}
+```
+
+<br>
+
+#### HbA1c summary
+```{r}
+summarytab(hba1c.m4)
+```
+
+<br>
+
+#### Glucose summary
+```{r}
+summarytab(glu.m4)
+```
+
+<br>
+
+<br>
+
+# Step 4: fitting with splines 
+
+<br>
+
+### 4.1 HbA1c
+```{r}
+hba1c.sp<- lmer(valuen2~ (1+medindi|PP187ID) + rcs(time0,3) + medindi + medindi:rcs(time0,3),
+              data=compdat_hba1c)
+
+
+#hba1c.sp
+```
+
+
+```{r}
+predicted<-hba1c.sp %>% predict(compdat_hba1c, re.form=NA)
+
+
+plot(compdat_hba1c$time0, predicted, 
+     xlab = "Number of months (Time0: prescription date)",
+     ylab = "Predicted HbA1c [%]")
+
+```
+
+
+
+### 4.2 HbA1c
+
+```{r}
+glu.sp<- lmer(valuen2~ (1+medindi|PP187ID) + rcs(time0,3) + medindi + medindi:rcs(time0,3),
+              data=compdat_glu)
+
+predicted<-glu.sp %>% predict(compdat_glu, re.form=NA)
+```
+
+
+```{r}
+plot(compdat_glu$time0, predicted, 
+     xlab = "Number of months (Time0: prescription date)",
+     ylab = "Predicted glucose [mmol/L]")
+
+```
+
+
+<br>
+
+<br>
+
+
+
+-------------------------------------------------------------------------------------------------------------------------------
+***CONTINUE***
+
+# Step 4: fitting with splines 
+<br>
+
+### 4.1 Cleaning up dosage data
+Categorize dosage into numeric values
+```{r}
+
+med$dperdag<-med$dosage
+med$dperdag<-ifelse(is.na(med$dperdag), med$dosering, med$dperdag)
+
+
+#0.5 per dag
+half<-
+c("1D0.5T",
+  "1D0.5T (dosering verlaagd)")                                                       
+
+#1 per dag
+one<-
+c("'s avonds 1 tablet",
+  "'s avonds 1 tablet-*--*-",
+  "'s morgens 1 tablet",
+  "'s morgens 1 tablet-*--*-", 
+  ";1d1t", 
+  "1 keer per dag 1 tablet-*--*-",
+  "1 maal per dag 1 tablet.", 
+  "1D-",
+  "1D1", 
+  "1D1IJ", 
+  "1D1T",
+  "1D1T  bij  ontbijt per eerstvolgende baxter",
+  "1D1T  Bij eerstvolgende  Baxter bij avondeten",
+  "1D1T  bij het avondeten innemen",
+  "1D1T  bij het avondeten innemen,",
+  "1D1T  bij het avondeten innemen, eerst voor 14 dag",
+  "1D1T  herhaalservice",
+  "1D1T  medicatie gestaakt", 
+  "1D1T  verlaging dosering",
+  "1D1T AV",
+  "1D1T BO",
+  "1D1T controle via specialist",
+  "1D1T MO",
+  "1D1T MO TM",
+  "1D1T MO VM",
+  "1D1T TM",
+  "1D1T VM MO", 
+  "1x per dag", 
+  "1x per dag 1",
+  "1x per dag 1 tablet",
+  "1x per dag 1 tablet-*--*-",
+  "2 keer per dag een halve tablet-*--*-",
+  "1x per dag een halve tablet-*--*-", 
+  "1x per dag een halve tablet",
+  "2D0.5T  in baxter toevoegen", 
+  "2x per dag een halve tablet", 
+  "2x per dag een halve tablet-*--*-",
+  "1x per dag 25 eenheden",
+  "1D1IJ  SOLOSTARPEN 1 doos",
+  "1d1t - start nadat glimepiride op is",
+  " 1d1t - start nadat glimepiride op is",
+  "ochtend: 1 tablet-*--*-",
+  "voor de nacht 1 tablet",
+  "voor de nacht 1 tablet-*--*-",
+  "voor de nacht: 1 tablet-*--*-",
+  "1D1T  bij het avondeten innemen,"
+)
+
+
+#1.5 per dag
+onenhalf<-
+c("1D1.5T MO",
+  "1x per dag anderhalve tablet",
+  "1x per dag anderhalve tablet-*--*-",
+  "3 keer per dag een halve tablet-*--*-",
+  "3x per dag een halve tablet-*--*-"
+  )
+
+
+#2 per dag  
+two<-
+c("2D1T",
+  " 2D1T",
+  "2D1T   Baxter",
+  "2D1T  Bij eerstvolgende  Baxter aanpassen",
+  "2D1T  bij het avondeten innemen, eerst voor 14 dag",
+  "2D1T  dosering verhoogd.",
+  "2D1T  dosis aanpassing per eerstvolgende baxter",
+  "2D1T  herhaal service",
+  "2D1T herhaalservice",
+  "2D1T  herhaalservice",
+  "2D1T  in volgende baxter",
+  "2D1T  is opgehoogd",
+  "'s morgens 1 en 's avonds 2-*--*-",
+  "'s morgens 1 en 's avonds 2 tabletten-*--*-",
+  "'s morgens 2 tabletten-*--*-",
+  "'s morgens en voor de nacht 1 tablet",
+  "2D1T", 
+  "1 keer per dag 2 tabletten-*--*-", 
+  "2D1T herhaalservice",
+  " 2D1T herhaalservice",
+  "1D2T",
+  "1D2T  eerste twee weken 1 tablet",
+  "1D2T MO",
+  "1D2T MO  (opgehoogd van 1,5 naar 2)",
+  "1D2T VM MO", 
+  "1x per dag 2 tabletten",
+  "1x per dag 2 tabletten-*--*-",
+  "2 keer per dag 1 tablet-*--*-",
+  "2 maal per dag 1 tablet",
+  "2 maal per dag 1 tablet.",
+  "2 maal per dag 1 tablet. TIJDENS of vlak NA het eten innemen.",
+  "2 maal per dag 1 tablet.\nTIJDENS of vlak NA het eten innemen.",
+  "2D1T  na 2 weken 3d1t",
+  "2D1T  start",
+  "2D1T  verhoogd",
+  "2D1T 2 per dag 1 tablet", 
+  "2D1T MO TM",
+  "2D1T TM",
+  "2D1T TO",
+  "2x per dag",
+  "2x per dag 1",
+  "2x per dag 1-*--*-",
+  "2x per dag 1 tablet",
+  "2x per dag 1 tablet-*--*-",
+  "ochtend: 2 tabletten-*--*-",
+  ";2dd1"
+  )
+                    
+
+#3 per dag
+three<-
+c("'s morgens 2 en 's avonds 1-*--*-", 
+  "'s morgens 2 en 's avonds 1 tablet-*--*-",
+  "'s morgens 3 tabletten-*--*-",
+  "1 keer per dag 3 tabletten-*--*-", 
+  "1D3T",
+  "1D3T  dosis gewijzigd",
+  "1D3T MO  (opgehoogd van 2 naar 3)", 
+  "2 keer per dag anderhalve tablet-*--*-",
+  "1x per dag 3 tabletten", 
+  "1x per dag 3 tabletten-*--*-", 
+  "2x per dag anderhalve tablet-*--*-", 
+  "3 keer per dag 1-*--*-", 
+  "3 maal per dag 1 tablet.", 
+  "3 maal per dag 1 tablet. TIJDENS of vlak NA het eten innemen.",
+  "3 maal per dag 1 tablet.\nTIJDENS of vlak NA het eten innemen",
+  "3 maal per dag 1 tablet.\nTIJDENS of vlak NA het eten innemen.",
+  "3 keer per dag 1 tablet-*--*-",
+  "3D1T",
+  "3D1T  ontbijt 1- avondeten 2",
+  "3D1T MO TM",
+  "3x per dag-*--*-",
+  "3x per dag 1-*--*-",
+  "3x per dag 1 tablet",
+  "3x per dag 1 tablet-*--*-",
+  "3x per dag 8 eenheden",
+  "3d",
+  " 3d",
+  "ochtend: 2-*-avond: 1-*-",
+  "ochtend: 1 tablet-*-avond: 2 tabletten-*-",
+  "ochtend: 3 tabletten-*--*-",
+  "3D1T per 6/11 dosis verhoogd!",
+  " 3D1T per 6/11 dosis verhoogd!",
+  ";1-0-2 tbl",
+  "ochtend: 1-*-avond: 2-*-",
+  "3 maal per dag 1 tablet.\nTIJDENS of vlak NA het eten innemen."
+  )
+
+
+#4 per dag
+four<-
+c("'s morgens 1, 's middags 1 en 's avonds 2-*--*-",
+  "'s morgens 2, 's middags 1 en 's avonds 1-*--*-", 
+  "'s morgens 4 tabletten-*--*-",
+  "1 keer per dag 4 tabletten-*--*-",
+  "2 keer per dag 2 tabletten-*--*-",
+  "1x per dag 4 tabletten-*--*-",
+  "2D2T",
+  "2D2T geleidelijk ophogen",
+  "2x per dag 2-*--*-",
+  "2x per dag 2 tabletten",
+  "2x per dag 2 tabletten-*--*-", 
+  "4 keer per dag 1 tablet-*--*-",
+  "4D1T", 
+  "4x per dag 1 tablet", 
+  "4x per dag 1 tablet-*--*-",
+  "ochtend: 1-*-middag: 1-*-avond: 2",
+  "ochtend: 4 tabletten-*--*-",
+  ";2dd2"
+  )             
+  
+
+
+#5 per dag
+five<-
+c("'s morgens 2, 's middags 1 en 's avonds 2-*--*-",
+  "5 keer per dag 1 tablet-*--*-", 
+  "5D1T",
+  "5x per dag 1 tablet-*--*-",
+  "avond: 1 tablet-*--*-" ,
+  "ochtend: 2-*-middag: 1-*-avond: 2"
+)               
+                                                   
+                                                    
+#6 per dag
+six<-
+c(";bij de maaltijd 6 eenheden",
+  "3 keer per dag 2 tabletten-*--*-",
+  "3x per dag 2 tabletten-*--*-"
+)
+
+#Unclear (more than once_ or insulin injection
+unknown<-
+c(" ",
+  "- -  GVH",
+  "- -  GVSCH",
+  "- -  GVSCH  10 pennen",
+  "- -  GVSCH  jaarrecept",
+  "- -  INJ",
+  "-    gebruik bekend",
+
+  "GVH",
+  " GVH",
+  "GVSCH",
+  " GVSCH",
+  "GVSCH  jaarrecept",
+  "- -  GVSCH  jaarrecept",
+  "gebruik bekend",
+  "-    gebruik bekend",
+  "GB",
+  " GB",
+  ";gebruik bekend",
+  "gebruik bekend-*--*-",
+  "INJ",
+  "- -  INJ",
+  "insuline volgens schema",
+  "insuline volgens schema-*--*-",
+  "ter injectie",
+  "ter injectie-*--*-",
+  "volgens schema-*--*-",
+  "volgens voorschrift",
+  "volgens voorschrift-*--*-",
+  "GVSCH  10 pennen", 
+  "- -  GVSCH  10 pennen",
+  "1 maal daags 1 injectie",
+  "  1 maal daags 1 injectie",
+  "bij avondeten SoloStarpen",
+  "  bij avondeten SoloStarpen",
+  "over op lantus ipv Toujeo",
+  "  over op lantus ipv Toujeo",
+  "STOP in volgende baxter",
+  "  STOP in volgende baxter",
+  "volgens voorschrift met pennaaldjes en naaldenco",
+  "  volgens voorschrift met pennaaldjes en naaldenco",
+  "1d16EH volgens afspraak",
+  " 1d16EH volgens afspraak",
+  "1d16EH volgens afspraak (Toujeo)",
+  " 1d16EH volgens afspraak (Toujeo)", 
+  "1d16EH volgens afspraak (Toujeo)  3 doosjes, morg",
+  " 1d16EH volgens afspraak (Toujeo)  3 doosjes, morg",
+  "; 1x per dag starten met 10 eh. naast novorapid",
+  ";2x50 EH", 
+  "1D60EH",
+  "1x per dag 1,8 milligram injecteren" 
+  )
+                                   
+
+med$dperdag<-med$dosage
+med$dperdag[c(which(med$dosage %in% half))]<-0.5
+med$dperdag[c(which(med$dosage %in% one))]<-1
+med$dperdag[c(which(med$dosage %in% onenhalf))]<-1.5
+med$dperdag[c(which(med$dosage %in% two))]<-2
+med$dperdag[c(which(med$dosage %in% three))]<-3
+med$dperdag[c(which(med$dosage %in% four))]<-4
+med$dperdag[c(which(med$dosage %in% five))]<-5
+med$dperdag[c(which(med$dosage %in% six))]<-6
+med$dperdag[c(which(med$dosage %in% unknown))]<-NA
+
+med$dperdag<-as.numeric(med$dperdag)
+table(med$dperdag)
+
+```
+
+
+Clean up the number of prescribed medication unit
+```{r}
+med$number<-ifelse(is.na(med$number), med$dnumber, med$number)
+med$number[med$etiket=="270 ST METFORM HCL ACT 500MG TABL\nMetformine 500mg tablet\n"]<-270
+med$number[med$etiket=="180 ST METFORMINE HCL MYLAN 500 TB\nMetformine 500mg tablet\n"]<-180
+med$number[med$etiket=="180 ST METFORMINE HCL ACTA 500MG T\nMetformine 500mg tablet\n"]<-180
+med$number[med$etiket=="60 ST METFORMINE HCL ACTA 500MG T\nMetformine 500mg tablet\n"]<-60
+med$number[med$etiket=="180 ST METFORM HCL ACT 500MG TABL\nMetformine 500mg tablet\n"]<-180
+med$number[med$etiket=="270 ST METFORMINE HCL ACTA 500MG T\nMetformine 500mg tablet\n"]<-270
+
+```
+
+
+<br>
+
+<br>
+
+---------------------------------------------------------------------------------------------------------------------------
+***Something to think of...***
+
+1) Some people have multiple prescription drugs targeting glucose-related measurements, stopped using drugs, change their prescription. 
+
+2) Ask Olaf: we noticed that last measurements before the prescription are high. Could be random high? -> solved
+
+3) I have not added baseline measurement to the repeated measurement yet. Still waiting for the first NEO visits dates.
+
+3) Double check the glucose measurements can indeed be combined into one.
+
+4) Sensitivity analyses??
+
+
+
+for sensitivity data set: Remove last measurements before the medication prescription to avoid random high.
+```{r}
+#First remove observations without before prescription data
+removeid<-as.numeric()
+for(i in unique(compdat_sensi$PP187ID)){
+removeid[length(removeid)+1] <-ifelse(sum(compdat_sensi$time0 <=0 & compdat_sensi$PP187ID==i)==0,
+                               i,
+                              NA)
+}
+removeid<-removeid[!is.na(removeid)]
+compdat_sensi<-compdat_sensi[-which(compdat_sensi$PP187ID %in% removeid), ]
+
+
+
+#Remove the last observations before the prescription
+removerow<-as.numeric()
+for(i in unique(compdat_sensi$PP187ID)){
+  #return the row numbers that contain the last observations before the medication prescription
+  removerow[length(removerow)+1] <- which(compdat_sensi$time0==sort(compdat_sensi$time0[compdat_sensi$time0 <=0 & compdat_sensi$PP187ID==i], decreasing = T)[1] & compdat_sensi$PP187ID==i)[1]
+  removerow[length(removerow)+1] <- which(compdat_sensi$time0==sort(compdat_sensi$time0[compdat_sensi$time0 <=0 & compdat_sensi$PP187ID==i], decreasing = T)[1] & compdat_sensi$PP187ID==i)[2]
+
+  }
+removerow<-removerow[!is.na(removerow)]
+compdat_sensi<-compdat_sensi[-removerow, ]
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
