@@ -51,13 +51,13 @@ library(base)
 
 
 # Step 1
-### 1.1 Load data files
+### 1.1 Load three data files
   + lab: laboratory measurements (hba1c, glucose)
   + med: GP medication data
   + base: NEO baseline data
 
 ```{r}
-# Data will not be uploaded to github due to privacy
+# Data will not be uploaded to github due to privacy concern.
 lab<-data.frame(read.dta13("//vf-i-epid/epid$/Choi/NEO-PP-187/LAB_Choi_2020-07-30.dta", nonint.factors=TRUE))
 med<-data.frame(read.dta13("//vf-i-epid/epid$/Choi/NEO-PP-187/MEDICATIE_Choi_2020-07-30.dta", nonint.factors=TRUE))
 base<-data.frame(read.dta13('//vf-i-epid/epid$/Choi/NEO-PP-187/NEO_analyse_PP187_gluclowmed_Choi_2020-07-30.dta', nonint.factors=TRUE))
