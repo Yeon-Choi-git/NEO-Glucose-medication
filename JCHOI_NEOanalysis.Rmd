@@ -58,9 +58,9 @@ library(base)
 
 ```{r}
 # Data will not be uploaded to github due to privacy concern.
-lab<-data.frame(read.dta13("//vf-i-epid/epid$/Choi/NEO-PP-187/LAB_Choi_2020-07-30.dta", nonint.factors=TRUE))
-med<-data.frame(read.dta13("//vf-i-epid/epid$/Choi/NEO-PP-187/MEDICATIE_Choi_2020-07-30.dta", nonint.factors=TRUE))
-base<-data.frame(read.dta13('//vf-i-epid/epid$/Choi/NEO-PP-187/NEO_analyse_PP187_gluclowmed_Choi_2020-07-30.dta', nonint.factors=TRUE))
+lab<-data.frame(read.dta13(REMOVED))
+med<-data.frame(read.dta13(REMOVED))
+base<-data.frame(read.dta13(REMOVED))
 #(check what's happening with 'income' var in the baseline data)-> fixed
 
 #View(lab)
